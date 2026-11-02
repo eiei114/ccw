@@ -1,0 +1,4 @@
+#!/bin/sh
+# ccx shim for POSIX shells (Git Bash / WSL interop / sh)
+# The real implementation is ccx.js; ccx.cmd is the cmd.exe/PowerShell shim.
+exec node "$(dirname "$0")/ccx.js" "$@"
