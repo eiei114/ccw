@@ -54,11 +54,13 @@ create the next account.
 | `ccx list` | profiles with account name, email, plan, label, last used |
 | `ccx account [name]` | one profile in detail (alias `whoami`) |
 | `ccx add` | log in to a new account and name the profile after it |
+| `ccx add <email>` | sign in as that email (pre-filled), profile named after it |
 | `ccx add <name>` | create a profile with a fixed name and log in |
 | `ccx label [name] [text]` | set the picker display name (`ccx label` lists, no text clears) |
 | `ccx clone <src> <dst>` | copy auth + settings + workspace trust into a new profile |
 | `ccx clone <src> <dst> --no-auth` | copy settings only, then log in separately |
 | `ccx login <name>` | re-login an existing profile |
+| `ccx login <email>` | re-login the profile that owns that email |
 | `ccx rename <old> <new>` | rename a profile directory (keeps the label) |
 | `ccx trust [name] [dir]` | mark a directory trusted so `settings.json` permissions apply |
 | `ccx help` | usage text |
@@ -74,16 +76,23 @@ Two different things, on purpose:
   choosing a name.
 
 Everyone's accounts differ, so `ccx add` with no name reads the account after login and names the
-profile after it (`account@example.com` → `account`). Keep your own scheme with `ccx add <name>`, and
-override only the display text with `ccx label`:
+profile after it (`account@example.com` → `account`). You can also give the email up front and it is
+pre-filled on Claude's login page, so the browser signs in as the right account on the first try.
+Keep your own scheme with `ccx add <name>`, and override only the display text with `ccx label`:
 
 ```bash
-ccx add                    # → profile "account", label "account"
-ccx add work               # → profile "work", label "work"
-ccx label work account     # → profile "work", label "account"
-ccx label work             # → clear the label
-ccx label                  # → list labels
+ccx add                          # → login, then profile "account", label "account"
+ccx add account@example.com      # → pre-filled email, profile "account"
+ccx add work                     # → profile "work", label "work"
+ccx add work --email me@corp.com # → profile "work", pre-filled email
+ccx login work --email me@corp.com
+ccx login me@corp.com            # → finds the profile that owns that email
+ccx label work account           # → profile "work", label "account"
+ccx label work                   # → clear the label
+ccx label                        # → list labels
 ```
+
+`--console` (API billing) and `--sso` are passed through to `claude auth login`.
 
 ### TUI keys
 
@@ -92,9 +101,9 @@ ccx label                  # → list labels
 | `↑` `↓` / `k` `j` | move |
 | `Enter` | launch selected |
 | `1`–`9` | launch that row immediately |
-| `l` | log in / re-login the selected profile |
+| `l` | log in / re-login the selected profile (asks for an email to pre-fill) |
 | `e` | edit the label (display name) |
-| `a` | add a new profile |
+| `a` | add a profile: type a name, or an email to sign in as |
 | `r` | refresh status |
 | `q` / `Esc` / `Ctrl-C` | quit |
 

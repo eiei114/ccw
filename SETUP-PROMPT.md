@@ -20,13 +20,15 @@ Requirements: Node.js 18+ and the `claude` CLI (Claude Code 2.x). Verify with `n
 
 ## 2. Create one profile per account
 
-For each account <ACCOUNT_1>, <ACCOUNT_2>, …:
+For each account <ACCOUNT_EMAIL_1>, <ACCOUNT_EMAIL_2>, …:
 
 ```bash
-ccx add <profile-name>
+ccx add <ACCOUNT_EMAIL_1>
+ccx add <ACCOUNT_EMAIL_2>
 ```
 
-Finish the browser OAuth flow for that account, then confirm:
+Passing the email pre-fills Claude's login page, so the browser flow signs in as the intended
+account. Finish the OAuth prompt for each, then confirm:
 
 ```bash
 ccx list                       # email + plan should match the account you just used
@@ -34,7 +36,8 @@ ccx <profile-name> -- -p "reply with exactly: OK"
 ```
 
 If a profile must reuse the existing `~/.claude` login (same account, separate state) use
-`ccx clone default <profile-name>` instead of `ccx add`.
+`ccx clone default <name>` instead of `ccx add`. If the email and profile name should differ, use
+`ccx add <name> --email <ACCOUNT_EMAIL>` and `ccx label <name> <display-name>`.
 
 When a profile reports `this workspace has not been trusted`, run `ccx trust <profile-name>` inside
 the directory you work in.

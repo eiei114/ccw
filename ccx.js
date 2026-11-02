@@ -276,7 +276,54 @@ function profileLine(p) {
 
 // --------------------------------------------------------------------- actions
 
-function addProfile(name) {
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function loginArgs(email, opts) {
+  const args = ['auth', 'login'];
+  if (opts && opts.console) args.push('--console');
+  if (opts && opts.sso) args.push('--sso');
+  if (email) args.push('--email', email);
+  return args;
+}
+
+// Profile name from an email: local part, slugified.
+function profileNameFromEmail(email) {
+  return slugify(accountName(email)) || 'account';
+}
+
+// Pick an unused profile name, appending -2, -3, ... when taken.
+function uniqueProfileName(base) {
+  let target = base;
+  let n = 2;
+  while (fs.existsSync(profileDir(target))) target = `${base}-${n++}`;
+  return target;
+}
+
+function createProfileDir(name) {
+  const dir = profileDir(name);
+  fs.mkdirSync(path.join(dir, 'projects'), { recursive: true });
+  return dir;
+}
+
+function runLoginFor(name, loginOpts) {
+  const dir = createProfileDir(name);
+  const email = loginOpts && loginOpts.email;
+  process.stdout.write(
+    `${C.g}created ${dir}${C.r}\n` +
+      `logging in${email ? ` as ${email}` : ''}... (finish the browser flow, then you are back here)\n\n`
+  );
+  const code = runClaude(loginArgs(email, loginOpts), profileEnv(name));
+  const info = summarizeNewProfile(name);
+  if (email && info && info.email && info.email.toLowerCase() !== email.toLowerCase()) {
+    process.stdout.write(
+      `${C.y}warning: signed in as ${info.email}, not ${email}.${C.r}\n` +
+        `${C.d}if that is wrong, run: ccx login ${name} --email ${email}${C.r}\n`
+    );
+  }
+  return code;
+}
+
+function addProfile(name, loginOpts) {
   if (name === 'default') {
     process.stderr.write('"default" is reserved for ~/.claude\n');
     return 1;
@@ -286,14 +333,7 @@ function addProfile(name) {
     process.stdout.write(`${C.y}profile "${name}" already exists at ${dir}${C.r}\n`);
     return 1;
   }
-  fs.mkdirSync(path.join(dir, 'projects'), { recursive: true });
-  process.stdout.write(
-    `${C.g}created ${dir}${C.r}\n` +
-      `logging in... (finish the browser flow, then you are back here)\n\n`
-  );
-  const code = runClaude(['auth', 'login'], profileEnv(name));
-  summarizeNewProfile(name);
-  return code;
+  return runLoginFor(name, loginOpts);
 }
 
 // After a login, tell the user who they signed in as and offer a readable label.
@@ -321,10 +361,10 @@ function summarizeNewProfile(name) {
 }
 
 // `ccx add` with no name: log in first, then name the profile after the account.
-function addAutoProfile() {
+function addAutoProfile(loginOpts) {
   const temp = `new-${Date.now().toString(36).slice(-5)}`;
-  const code = addProfile(temp);
-  if (code !== 0) return code;
+  const code = runLoginFor(temp, loginOpts);
+  if (!fs.existsSync(profileDir(temp))) return code;
   const info = describeWithSummary(temp, { skipCli: false });
   if (!info.email) {
     process.stdout.write(
@@ -333,10 +373,8 @@ function addAutoProfile() {
     );
     return 0;
   }
-  const base = slugify(accountName(info.email)) || temp;
-  let target = base;
-  let n = 2;
-  while (fs.existsSync(profileDir(target))) target = `${base}-${n++}`;
+  const base = profileNameFromEmail(info.email) || temp;
+  const target = uniqueProfileName(base);
   fs.renameSync(profileDir(temp), profileDir(target));
   writeLabel(target, accountName(info.email));
   process.stdout.write(
@@ -362,8 +400,21 @@ function trustDir(name, dir) {
   return 0;
 }
 
-function loginProfile(name) {
-  return runClaude(['auth', 'login'], profileEnv(name));
+function loginProfile(name, loginOpts) {
+  if (!listProfileNames().includes(name)) {
+    process.stderr.write(`unknown profile "${name}"\n`);
+    return 1;
+  }
+  const email = loginOpts && loginOpts.email;
+  if (email) process.stdout.write(`${C.d}pre-filling ${email} on the login page${C.r}\n`);
+  const code = runClaude(loginArgs(email, loginOpts), profileEnv(name));
+  const info = summarizeNewProfile(name);
+  if (email && info && info.email && info.email.toLowerCase() !== email.toLowerCase()) {
+    process.stdout.write(
+      `${C.y}warning: signed in as ${info.email}, not ${email}.${C.r}\n`
+    );
+  }
+  return code;
 }
 
 function renameProfile(from, to) {
@@ -580,8 +631,12 @@ async function pick(initialProfiles) {
     } else if (key === 'l') {
       process.stdout.write(SHOW_CURSOR);
       clearScreen();
-      const code = loginProfile(profiles[cursor].name);
-      summarizeNewProfile(profiles[cursor].name);
+      const target = profiles[cursor];
+      const answer = await promptLine(
+        `email to pre-fill for ${target.name}${target.email ? ` [${target.email}]` : ''} (blank = any): `
+      );
+      const email = EMAIL_RE.test(answer) ? answer : target.email || null;
+      const code = loginProfile(target.name, { email });
       profiles = listProfileNames().map(describe);
       status = code === 0 ? `logged in ${profiles[cursor].name}` : `login exited ${code}`;
     } else if (key === 'e') {
@@ -598,19 +653,44 @@ async function pick(initialProfiles) {
     } else if (key === 'a') {
       process.stdout.write(SHOW_CURSOR);
       clearScreen();
-      const name = await promptLine('new profile name: ');
-      if (name) {
-        addProfile(name);
+      const answer = await promptLine(
+        'new profile: name, or email to sign in as <you@example.com>: '
+      );
+      if (!answer || answer === '\u0003') {
+        status = 'cancelled';
+      } else if (EMAIL_RE.test(answer)) {
+        const name = uniqueProfileName(profileNameFromEmail(answer));
+        addProfile(name, { email: answer });
         profiles = listProfileNames().map(describe);
         const idx = profiles.findIndex((p) => p.name === name);
         if (idx >= 0) cursor = idx;
+        status = `added ${name} for ${answer}`;
+      } else {
+        addProfile(answer);
+        profiles = listProfileNames().map(describe);
+        const idx = profiles.findIndex((p) => p.name === answer);
+        if (idx >= 0) cursor = idx;
+        status = `profile ${answer} added`;
       }
-      status = name ? `profile ${name} added` : 'cancelled';
     }
   }
 }
 
 // ------------------------------------------------------------------------ main
+
+// Split --email/--console/--sso out of argv; leftovers stay for the profile name.
+function parseLoginOpts(args) {
+  const opts = { email: null, console: false, sso: false };
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--email') opts.email = args[++i] || null;
+    else if (a.startsWith('--email=')) opts.email = a.slice(8);
+    else if (a === '--console' || a === '--api') opts.console = true;
+    else if (a === '--sso') opts.sso = true;
+  }
+  if (opts.email && !EMAIL_RE.test(opts.email)) opts.email = null;
+  return opts;
+}
 
 async function main() {
   let argv = process.argv.slice(2);
@@ -682,8 +762,34 @@ async function main() {
     );
     return 0;
   }
-  if (first === 'add') return argv[1] ? addProfile(argv[1]) : addAutoProfile();
-  if (first === 'login' && argv[1]) return loginProfile(argv[1]);
+  if (first === 'add') {
+    const opts = parseLoginOpts(argv.slice(1));
+    const target = argv.slice(1).find((a) => !a.startsWith('-'));
+    if (target && EMAIL_RE.test(target)) {
+      // ccx add you@example.com → profile named after the email
+      const name = uniqueProfileName(profileNameFromEmail(target));
+      return addProfile(name, { ...opts, email: target });
+    }
+    if (target) return addProfile(target, { ...opts, email: opts.email });
+    return addAutoProfile(opts.email ? { ...opts } : opts);
+  }
+  if (first === 'login' && argv[1]) {
+    const opts = parseLoginOpts(argv.slice(2));
+    if (EMAIL_RE.test(argv[1])) {
+      const email = argv[1];
+      const found = listProfileNames()
+        .map((n) => describeWithSummary(n, { skipCli: true }))
+        .find((p) => p.email && p.email.toLowerCase() === email.toLowerCase());
+      if (found) {
+        process.stdout.write(`${C.d}"${email}" already has profile "${found.name}"${C.r}\n`);
+        return loginProfile(found.name, { ...opts, email });
+      }
+      const name = uniqueProfileName(profileNameFromEmail(email));
+      process.stdout.write(`${C.d}no profile matches that email; creating "${name}"${C.r}\n`);
+      return addProfile(name, { ...opts, email });
+    }
+    return loginProfile(argv[1], opts);
+  }
   if ((first === 'rename' || first === 'mv') && argv[1] && argv[2]) {
     return renameProfile(argv[1], argv[2]);
   }
