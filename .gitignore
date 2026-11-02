@@ -1,8 +1,9 @@
-node_modules/
+/target
 *.log
 .DS_Store
 
 # never commit profile data
+.ccw/
 .claude-accounts/
 .credentials.json
 .claude.json
