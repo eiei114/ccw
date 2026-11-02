@@ -1,6 +1,10 @@
 # ccw — Claude Code multi-account launcher
 
 [![crates.io](https://img.shields.io/crates/v/ccw.svg)](https://crates.io/crates/ccw)
+[![downloads](https://img.shields.io/crates/d/ccw.svg)](https://crates.io/crates/ccw)
+[![ci](https://github.com/eiei114/ccw/actions/workflows/ci.yml/badge.svg)](https://github.com/eiei114/ccw/actions/workflows/ci.yml)
+[![license](https://img.shields.io/crates/l/ccw.svg)](LICENSE)
+[![msrv](https://img.shields.io/crates/msrv/ccw.svg)](https://crates.io/crates/ccw)
 
 Run several Claude Code accounts side by side and pick one from a TUI on startup.
 
