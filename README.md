@@ -62,6 +62,8 @@ The choice is remembered per profile, so the second launch starts where you left
 
 A single static binary. No Node.js needed — only the `claude` CLI (Claude Code 2.x).
 
+Rust 1.80 or newer to build; the pre-built path needs only `cargo install`.
+
 ## Install
 
 ```bash
@@ -217,12 +219,14 @@ other than `default`. Both are remembered per profile in `~/.ccw/.launch/<name>`
 ccw defaults work --model opus --effort xhigh   # set once, no launch
 ccw defaults work                               # what will launch
 ccw defaults                                    # every profile
-ccw add work --effort high                      # not parsed: --effort belongs to ccw, not add
 ```
 
 `--model` and `--effort` are consumed by `ccw` wherever they appear, except after `--`. Use
 `ccw work -- --effort low` to hand a raw flag to `claude` instead. The flags write the remembered
 choice too, so the picker opens on them next time.
+
+Note that `ccw add` and `ccw login` ignore these two flags — they have no launch to attach them
+to. Set the choice with `ccw defaults <name>` afterwards, or let the picker ask.
 
 ## YOLO mode
 
@@ -245,6 +249,17 @@ Every launch appends `--allow-dangerously-skip-permissions --dangerously-skip-pe
 Set `CCW_HOME` to keep profiles somewhere else. Each profile directory holds its own
 `.claude.json`, `.credentials.json`, `settings.json`, `projects/`, `sessions/`, `skills/`,
 `plugins/`.
+
+## Environment
+
+| Variable | Effect |
+| --- | --- |
+| `CCW_HOME` | where profiles live (default `~/.ccw`) |
+| `CCW_SAFE=1` | never add `--dangerously-skip-permissions` |
+| `CCW_NO_USAGE=1` | no network calls; the usage column shows cached numbers or `usage off` |
+| `COLUMNS` | override the detected terminal width, which also shapes piped `ccw` output |
+| `NO_COLOR` | plain output, no ANSI colours |
+| `CCX_SAFE=1` | old name for `CCW_SAFE`, still honoured |
 
 ## Manual setup (no ccw)
 
@@ -274,6 +289,32 @@ CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-... claude
 - New profiles report `this workspace has not been trusted`, which makes Claude Code ignore
   `permissions` from `settings.json`. Run `ccw trust <name>` (or accept the dialog once).
 - `default` is reserved for `~/.claude` and cannot be renamed or created.
+- The usage column reads a private endpoint (`/api/oauth/usage`). If Anthropic changes it, the
+  column degrades to `usage n/a` and nothing else breaks.
+
+## Changelog
+
+### 0.5.0
+
+- Picker rows are laid out for the actual terminal width and never wrap; columns are dropped
+  cheapest-first as the window narrows.
+- `ccw list` measures its own column widths, so the header lines up and model/effort no longer
+  collapse into a single column.
+
+### 0.4.1
+
+- `ccw list` reports why usage is missing (`usage n/a`, `usage off`) instead of a bare `-`.
+
+### 0.4.0
+
+- Three-step picker: account → model → effort, with both choices remembered per profile.
+- `5h / 7d` rate-limit usage column, fetched in the background and cached for 60s.
+- `--model`, `--effort`, `-Q` flags and the `ccw defaults` command.
+- `CCW_NO_USAGE=1` to keep every network call off.
+
+### 0.3.0
+
+- Rewritten in Rust (formerly `ccx`, a Node.js program).
 
 ## Formerly ccx
 
