@@ -171,14 +171,19 @@ fn launch(name: &str, flags: &LaunchFlags, passthrough: &[String]) -> i32 {
 
 fn cmd_list() -> i32 {
     let c = c();
-    let rows = describe_all(false);
+    let mut rows = describe_all(false);
+    profile::sort_for_picker(&mut rows);
+    let line_at = rows.iter().position(profile::needs_login);
     let show_label = rows.iter().any(|p| p.label.is_some());
     let usage_off = usage::disabled();
     // Measure first so the header and every row share one set of widths.
     let usage_cells: Vec<String> = rows
         .iter()
         .map(|p| {
-            if usage_off {
+            if profile::needs_login(p) {
+                // no token, so nothing to show and nothing to fetch
+                "-".to_string()
+            } else if usage_off {
                 "usage off".to_string()
             } else {
                 let slot = usage::lookup(&p.name, true);
@@ -254,6 +259,33 @@ fn cmd_list() -> i32 {
     println!("{}{}{} path", c.dim, head.join(" "), c.reset);
 
     for (i, p) in rows.iter().enumerate() {
+        if line_at == Some(i) {
+            // a rule under the accounts that can launch, measured with the same columns
+            let rule: usize = w_profile
+                + w_account
+                + w_plan
+                + w_usage
+                + w_age
+                + w_model
+                + w_effort
+                + 6
+                + if show_label { w_label + 1 } else { 0 };
+            let label = " needs a login ";
+            let left = rule.saturating_sub(label.chars().count()) / 2;
+            let right = rule
+                .saturating_sub(label.chars().count())
+                .saturating_sub(left);
+            println!(
+                "{}{}{}{}{}{}{}",
+                c.dim,
+                "─".repeat(left),
+                c.yellow,
+                label,
+                c.dim,
+                "─".repeat(right),
+                c.reset
+            );
+        }
         let mut cols = vec![pad(&p.name, w_profile)];
         if show_label {
             cols.push(pad(p.label.as_deref().unwrap_or(""), w_label));
@@ -267,7 +299,18 @@ fn cmd_list() -> i32 {
         cols.push(pad(&ages[i], w_age));
         cols.push(pad(&models[i], w_model));
         cols.push(pad(&efforts[i], w_effort));
-        println!("{}{}{}{}", cols.join(" "), c.dim, p.dir.display(), c.reset);
+        if profile::needs_login(p) {
+            println!(
+                "{}{}{}{}{}",
+                c.dim,
+                cols.join(" "),
+                c.reset,
+                p.dir.display(),
+                c.reset
+            );
+        } else {
+            println!("{}{}{}{}", cols.join(" "), c.dim, p.dir.display(), c.reset);
+        }
     }
     0
 }

@@ -104,8 +104,18 @@ fn is_tui() -> bool {
 // ---------------------------------------------------------------- plain fallback
 
 /// One prompt over a numbered list. `default` is the 1-based row used for an empty answer.
-fn pick_index_plain(question: &str, rows: &[String], default: usize) -> Option<usize> {
+/// `divider_at` prints a dim rule above that 0-based row without taking a number, so the
+/// accounts that need a login can sit below a line while the numbering stays contiguous.
+fn pick_index_plain(
+    question: &str,
+    rows: &[String],
+    default: usize,
+    divider_at: Option<usize>,
+) -> Option<usize> {
     for (i, row) in rows.iter().enumerate() {
+        if divider_at == Some(i) {
+            println!("{}", divider("needs a login"));
+        }
         println!("{}  {row}", i + 1);
     }
     let answer = prompt_line(&format!("{question} 1-{} [{default}]: ", rows.len()))?;
@@ -121,10 +131,45 @@ fn pick_index_plain(question: &str, rows: &[String], default: usize) -> Option<u
     }
 }
 
-fn pick_plain(profiles: Vec<Profile>, loader: &mut Loader) -> Option<Picked> {
+/// A dim rule with a short label, drawn between the accounts that can launch and the ones
+/// that cannot.
+fn divider(label: &str) -> String {
+    let c = c();
+    let width = style::width().clamp(16, 48);
+    let label = format!(" {label} ");
+    let used = label.chars().count();
+    if used + 4 >= width {
+        return format!("{}{}{}", c.dim, label.trim(), c.reset);
+    }
+    let rest = width - used;
+    let left = rest / 2;
+    let right = rest - left;
+    format!(
+        "{}{}{}{}{}",
+        c.dim,
+        "─".repeat(left),
+        label,
+        "─".repeat(right),
+        c.reset
+    )
+}
+
+/// Where the "needs a login" block starts, if any row needs one.
+fn divider_at(profiles: &[Profile]) -> Option<usize> {
+    let at = profiles.iter().position(profile::needs_login)?;
+    (at > 0).then_some(at)
+}
+
+fn pick_plain(mut profiles: Vec<Profile>, loader: &mut Loader) -> Option<Picked> {
+    profile::sort_for_picker(&mut profiles);
     loader.settle(Duration::from_secs(4));
     let slots = usage_snapshot(loader);
-    let idx = pick_index_plain("account", &row_titles(&profiles, &slots), 1)?;
+    let idx = pick_index_plain(
+        "account",
+        &row_titles(&profiles, &slots),
+        1,
+        divider_at(&profiles),
+    )?;
     let chosen = profiles.into_iter().nth(idx - 1)?;
     let remembered = launch::read(&chosen.name);
     let mut choice = remembered.clone();
@@ -135,7 +180,7 @@ fn pick_plain(profiles: Vec<Profile>, loader: &mut Loader) -> Option<Picked> {
         .iter()
         .map(|(key, note)| format!("{key} — {note}"))
         .collect();
-    let picked = pick_index_plain("model", &labels, model_default)?;
+    let picked = pick_index_plain("model", &labels, model_default, None)?;
     let key = model_rows.get(picked - 1).map(|(key, _)| key.clone())?;
     choice.model = if key == "default" { None } else { Some(key) };
 
@@ -145,7 +190,7 @@ fn pick_plain(profiles: Vec<Profile>, loader: &mut Loader) -> Option<Picked> {
         .iter()
         .map(|(key, note)| format!("{key} — {note}"))
         .collect();
-    let picked = pick_index_plain("effort", &labels, effort_default)?;
+    let picked = pick_index_plain("effort", &labels, effort_default, None)?;
     choice.effort = match effort_rows.get(picked - 1) {
         Some((key, _)) if key != "default" => Some(key.clone()),
         _ => None,
@@ -315,19 +360,40 @@ fn usage_snapshot(loader: &Loader) -> HashMap<String, Slot> {
     loader.snapshot()
 }
 
+/// Only accounts that can actually answer are worth a usage fetch; a signed-out profile has
+/// no token, so asking just delays the column that matters.
+fn loader_names(profiles: &[Profile]) -> Vec<String> {
+    profiles
+        .iter()
+        .filter(|p| !profile::needs_login(p))
+        .map(|p| p.name.clone())
+        .collect()
+}
+
 // ---------------------------------------------------------------- account step
 
 fn index_of(profiles: &[Profile], name: &str) -> Option<usize> {
     profiles.iter().position(|p| p.name == name)
 }
 
-/// Pick an account. `esc` here quits (there is nothing to go back to).
+/// Pick an account. `esc` here quits (there is nothing to go back to). Accounts that need a
+/// login are listed last, below a rule, so a half-finished setup never sits in the way.
 fn pick_account(profiles: &mut Vec<Profile>, loader: &mut Loader) -> Option<usize> {
     let c = c();
+    profile::sort_for_picker(profiles);
+    // Start on the most recently used account that can actually launch, so a stale entry
+    // parked below the rule never becomes the cursor.
     let mut cursor = profiles
         .iter()
         .enumerate()
+        .filter(|(_, p)| !profile::needs_login(p))
         .max_by_key(|(i, p)| (p.last_used, std::cmp::Reverse(*i)))
+        .or_else(|| {
+            profiles
+                .iter()
+                .enumerate()
+                .max_by_key(|(i, p)| (p.last_used, std::cmp::Reverse(*i)))
+        })
         .map(|(i, _)| i)
         .unwrap_or(0);
     let mut status = String::new();
@@ -341,7 +407,12 @@ fn pick_account(profiles: &mut Vec<Profile>, loader: &mut Loader) -> Option<usiz
             c.bold, c.reset, c.dim, c.reset, c.dim, c.reset
         ));
         out.push(String::new());
+        let line_at = divider_at(profiles);
         for (i, line) in row_titles(profiles, &slots).iter().enumerate() {
+            if line_at == Some(i) {
+                out.push(format!("   {}", divider("needs a login")));
+                out.push(String::new());
+            }
             let sel = if i == cursor {
                 format!("{}❯{}", c.green, c.reset)
             } else {
@@ -407,14 +478,15 @@ fn pick_account(profiles: &mut Vec<Profile>, loader: &mut Loader) -> Option<usiz
             }
             Key::Char('u') => {
                 show_cursor();
-                loader.reload(profiles.iter().map(|p| p.name.clone()).collect(), true);
+                loader.reload(loader_names(profiles), true);
                 slots = usage_snapshot(loader);
                 status = "refreshing usage".into();
             }
             Key::Char('r') => {
                 show_cursor();
                 *profiles = describe_all(false);
-                loader.reload(profiles.iter().map(|p| p.name.clone()).collect(), true);
+                profile::sort_for_picker(profiles);
+                loader.reload(loader_names(profiles), true);
                 slots = usage_snapshot(loader);
                 cursor = cursor.min(profiles.len().saturating_sub(1));
             }
@@ -447,6 +519,7 @@ fn pick_account(profiles: &mut Vec<Profile>, loader: &mut Loader) -> Option<usiz
                     },
                 );
                 *profiles = describe_all(false);
+                profile::sort_for_picker(profiles);
                 cursor = index_of(profiles, &name).unwrap_or(0);
                 status = if code == 0 {
                     format!("logged in {name}")
@@ -498,6 +571,7 @@ fn pick_account(profiles: &mut Vec<Profile>, loader: &mut Loader) -> Option<usiz
                     status = format!("add {name} exited {code}");
                 }
                 *profiles = describe_all(false);
+                profile::sort_for_picker(profiles);
                 if let Some(i) = index_of(profiles, &name) {
                     cursor = i;
                 }
@@ -579,7 +653,7 @@ fn edit_effort(profile: &Profile, choice: &mut Choice) -> bool {
 
 /// Show the account picker, then model and effort for that account.
 pub fn pick(initial: Vec<Profile>) -> Option<Picked> {
-    let mut loader = Loader::start(initial.iter().map(|p| p.name.clone()).collect());
+    let mut loader = Loader::start(loader_names(&initial));
     if !is_tui() {
         return pick_plain(initial, &mut loader);
     }

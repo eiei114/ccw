@@ -18,10 +18,15 @@ plugins and MCP servers. `ccw` manages one directory per account and gives you a
 
    ❯ 1  you        you@example.com     5h   8% · 7d  69%  ↻14m  max  just now  default
      2  work       work@company.com    5h 100% · 7d 100%  ↻6h4m  max  1h ago    work
-     3  personal   logged out          usage n/a                        personal
+     ──────────────── needs a login ────────────────
+     3  personal   logged out          logged out               personal
 
   ↑↓/jk move · enter next · l login · a add · e label · r refresh · u usage · q quit   YOLO
 ```
+
+Accounts that cannot launch — never signed in, logged out, or a directory that is gone — are
+listed last, below the rule, and say `logged out` in the usage column instead of asking the
+endpoint for numbers they cannot have. `ccw list` sorts them the same way.
 
 The `5h / 7d` column is the account's rate-limit usage: the rolling 5-hour window and the
 weekly window, each as a percentage of the plan allowance, and `↻` for the sooner of the two
@@ -169,6 +174,10 @@ Account list:
 | `u` | re-fetch usage now (otherwise a snapshot younger than 60s is reused) |
 | `q` / `Esc` / `Ctrl-C` | quit |
 
+Accounts that need a login sit below a dim rule at the bottom of the list, so a half-finished
+setup never takes a row you meant to pick. The sort is stable: everything above and below the
+rule keeps its usual order.
+
 Model list:
 
 | Key | Action |
@@ -199,7 +208,8 @@ profile's OAuth token from `~/.ccw/<name>/.credentials.json`.
 - `CCW_NO_USAGE=1` turns the network off; cached numbers are still shown (`usage off` when there
   are none).
 - A snapshot younger than 60 seconds is reused; `u` in the picker forces a re-fetch.
-- Expired or missing credentials show `usage n/a`. `ccw` does not refresh tokens — run
+- Expired or missing credentials show `usage n/a`, or `logged out` when the profile has never
+  signed in. `ccw` does not refresh tokens — run
   `ccw login <name>` and the column fills in again.
 - The endpoint rate-limits aggressive polling, and nothing here polls in the background or leaves
   a daemon behind.
@@ -293,6 +303,12 @@ CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-... claude
   column degrades to `usage n/a` and nothing else breaks.
 
 ## Changelog
+
+### 0.6.0
+
+- Accounts that need a login (never signed in, logged out, or a missing directory) are listed
+  last, below a `needs a login` rule, in both the picker and `ccw list`. Their usage column says
+  `logged out` instead of `usage n/a`, and they are skipped in the background usage fetch.
 
 ### 0.5.0
 

@@ -291,6 +291,18 @@ pub fn describe_all(skip_cli: bool) -> Vec<Profile> {
     list_names().iter().map(|n| describe(n, skip_cli)).collect()
 }
 
+/// True when the profile cannot launch without signing in first: no credentials, or a
+/// directory that is gone.
+pub fn needs_login(p: &Profile) -> bool {
+    !p.exists || matches!(p.auth.as_deref(), Some("logged-out") | Some("missing"))
+}
+
+/// Sink the accounts that need a login to the bottom, in place. The sort is stable, so the
+/// picker keeps a familiar order above and below the line.
+pub fn sort_for_picker(profiles: &mut [Profile]) {
+    profiles.sort_by_key(needs_login);
+}
+
 pub fn human_age(t: Option<SystemTime>) -> String {
     let Some(t) = t else {
         return "never".into();
@@ -475,13 +487,9 @@ pub fn picker_line(p: &Profile, usage: &str, usage_compact: &str, columns: &Colu
     } else {
         usage
     };
-    let cell = if p.auth.as_deref() == Some("logged-out") && p.email.is_none() {
-        format!(
-            "{}{}{}",
-            c.yellow,
-            pad("logged out", columns.cell_width()),
-            c.reset
-        )
+    let cell = if needs_login(p) {
+        let note = if p.exists { "logged out" } else { "not set up" };
+        format!("{}{}{}", c.yellow, pad(note, columns.cell_width()), c.reset)
     } else {
         pad(text, columns.cell_width())
     };
@@ -577,6 +585,63 @@ mod tests {
         profile.email = Some("x@y.z".into());
         let line = &picker_rows(&[(&profile, text)], 100)[0];
         assert!(line.contains("x@y.z"));
+    }
+
+    fn sample(name: &str, auth: &str, email: Option<&str>) -> Profile {
+        Profile {
+            name: name.into(),
+            dir: PathBuf::from(format!("/tmp/{name}")),
+            exists: auth != "missing",
+            email: email.map(String::from),
+            plan: None,
+            auth: Some(auth.into()),
+            label: None,
+            last_used: None,
+        }
+    }
+
+    #[test]
+    fn accounts_that_need_a_login_sink_to_the_bottom() {
+        let mut profiles = vec![
+            sample("default", "logged-out", None),
+            sample("work", "claude.ai", Some("work@corp.com")),
+            sample("gone", "missing", None),
+            sample("personal", "claude.ai", Some("me@home.com")),
+            sample("stale", "unknown", None),
+        ];
+        sort_for_picker(&mut profiles);
+        let names: Vec<&str> = profiles.iter().map(|p| p.name.as_str()).collect();
+        // usable accounts keep their order, the rest follow below
+        assert_eq!(names, vec!["work", "personal", "stale", "default", "gone"]);
+        let first_needs = profiles.iter().position(needs_login).expect("a line");
+        assert!(profiles[first_needs..].iter().all(needs_login));
+    }
+
+    #[test]
+    fn signed_out_rows_say_so_in_the_usage_cell() {
+        let columns = Columns::default();
+        let line = picker_line(
+            &sample("default", "logged-out", None),
+            "5h   8%",
+            "5h   8%",
+            &columns,
+        );
+        assert!(line.contains("logged out"), "{line}");
+        assert!(!line.contains("5h"), "{line}");
+        let line = picker_line(
+            &sample("gone", "missing", None),
+            "5h   8%",
+            "5h   8%",
+            &columns,
+        );
+        assert!(line.contains("not set up"), "{line}");
+        let line = picker_line(
+            &sample("work", "claude.ai", Some("work@corp.com")),
+            "5h   8%",
+            "5h   8%",
+            &columns,
+        );
+        assert!(line.contains("5h   8%"), "{line}");
     }
 
     #[test]
