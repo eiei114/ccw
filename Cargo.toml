@@ -1,6 +1,6 @@
 [package]
 name = "ccw"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 rust-version = "1.80"
 description = "Claude Code multi-account launcher with a TUI picker"
@@ -20,6 +20,7 @@ path = "src/main.rs"
 crossterm = "0.29"
 ctrlc = "3.5"
 serde_json = { version = "1", features = ["preserve_order"] }
+ureq = "2"
 
 [profile.release]
 lto = true

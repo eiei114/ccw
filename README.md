@@ -6,21 +6,54 @@
 [![license](https://img.shields.io/crates/l/ccw.svg)](LICENSE)
 [![msrv](https://img.shields.io/crates/msrv/ccw.svg)](https://crates.io/crates/ccw)
 
-Run several Claude Code accounts side by side and pick one from a TUI on startup.
+Run several Claude Code accounts side by side and pick one from a TUI on startup, together with the
+model and effort level it should use.
 
 Claude Code stores its auth and settings in `~/.claude` + `~/.claude.json`. Point `CLAUDE_CONFIG_DIR`
 somewhere else and you get a fully independent account: its own login, projects, sessions, skills,
 plugins and MCP servers. `ccw` manages one directory per account and gives you a picker.
 
 ```
-  ccw — choose a Claude Code account
+  ccw — choose a Claude Code account  (5h / 7d window)
 
-   ❯ 1  default        you@example.com (max)      2m ago
-     2  work           work@company.com (max)     1h ago
-     3  personal       logged out  personal
+   ❯ 1  you          you@example.com      max     5h   8% · 7d  69%  ↻14m   default  8m ago
+     2  work         work@company.com     max     5h 100% · 7d 100%  ↻6h4m  work     1h ago
+     3  personal     logged out                  usage n/a                 personal
 
-  ↑↓/jk move · enter launch · l login · a add · e label · r refresh · q quit   YOLO
+  ↑↓/jk move · enter next · l login · a add · e label · r refresh · u usage · q quit   YOLO
 ```
+
+The `5h / 7d` column is the account's rate-limit usage: the rolling 5-hour window and the
+weekly window, each as a percentage of the plan allowance, and `↻` for the sooner of the two
+reset times. It comes from Claude Code's own `GET /api/oauth/usage`, fetched in the background
+so the picker never waits on the network.
+
+`enter` moves on to the model, then the effort level, then launches:
+
+```
+  ccw — pick a model for work
+
+   1  default       no --model, let Claude Code pick
+ ❯ 2  opus          alias for the newest Opus
+   3  sonnet        alias for the newest Sonnet
+   4  haiku         alias for the newest Haiku
+   5  fable         alias for the newest Fable
+
+  ↑↓/jk move · enter next · c custom ID · esc back · q quit
+
+  ccw — pick an effort level for work
+
+   1  default       let Claude Code decide
+   2  low           fastest answer, least thinking
+   3  medium        less than the model default
+ ❯ 4  high          the usual default
+   5  xhigh         more thinking than default
+   6  max           the most thinking the model allows
+
+  ↑↓/jk move · enter launch · esc back · q quit
+```
+
+The choice is remembered per profile, so the second launch starts where you left off.
 
 A single static binary. No Node.js needed — only the `claude` CLI (Claude Code 2.x).
 
@@ -46,10 +79,14 @@ not isolate logins. Use `CLAUDE_CODE_OAUTH_TOKEN` (see below) or the API key on 
 ## Usage
 
 ```bash
-ccw                     # TUI picker, then launch claude
-ccw work                # launch a profile directly, no TUI
+ccw                     # TUI picker → model → effort → launch claude
+ccw work                # launch a profile directly, no TUI (remembered model/effort)
 ccw work -- -p "hi"     # forward args to claude (-- separates ccw from claude args)
 ccw --safe              # TUI, but do not add --dangerously-skip-permissions
+ccw --model opus --effort high
+                        # TUI, but skip the model and effort steps
+ccw work --model sonnet --effort max
+                        # no TUI, explicit model/effort (also remembered)
 ```
 
 Never opened the picker before? `ccw` lists `default` (`~/.claude`) and nothing else. Press `a` to
@@ -59,9 +96,10 @@ create the next account.
 
 | Command | What it does |
 | --- | --- |
-| `ccw` | TUI picker → launch |
-| `ccw list` | profiles with account name, email, plan, label, last used |
+| `ccw` | TUI picker → model → effort → launch |
+| `ccw list` | profiles with account, plan, label, 5h/7d usage, last used, model, effort |
 | `ccw account [name]` | one profile in detail (alias `whoami`) |
+| `ccw defaults [name] [--model M] [--effort E]` | show or set the remembered launch choice (alias `model`) |
 | `ccw add` | log in to a new account and name the profile after it |
 | `ccw add <email>` | sign in as that email (pre-filled), profile named after it |
 | `ccw add <name>` | create a profile with a fixed name and log in |
@@ -110,19 +148,76 @@ different Claude account, the flow may finish as that account; `ccw` then prints
 
 ### TUI keys
 
+Account list:
+
 | Key | Action |
 | --- | --- |
 | `↑` `↓` / `k` `j` | move |
-| `Enter` | launch selected |
-| `1`–`9` | launch that row immediately |
+| `Enter` | go to the model list |
+| `1`–`9` | pick that row and go to the model list |
 | `l` | log in / re-login the selected profile (asks for an email to pre-fill) |
 | `e` | edit the label (display name) |
 | `a` | add a profile: type a name, or an email to sign in as |
-| `r` | refresh status |
+| `r` | refresh profiles and usage |
+| `u` | re-fetch usage now (otherwise a snapshot younger than 60s is reused) |
 | `q` / `Esc` / `Ctrl-C` | quit |
 
-The cursor starts on the most recently used profile. When stdin is not a terminal, `ccw` falls
-back to a numbered list read from stdin.
+Model list:
+
+| Key | Action |
+| --- | --- |
+| `↑` `↓` / `k` `j` | move |
+| `Enter` / `1`–`9` | use that model, go to the effort list |
+| `c` | type any alias or full model ID |
+| `Esc` | back to the account list |
+
+The cursor starts on the remembered model (or `default`).
+
+Effort list:
+
+| Key | Action |
+| --- | --- |
+| `↑` `↓` / `k` `j` | move |
+| `Enter` / `1`–`9` | use that effort level and launch |
+| `Esc` | back to the model list |
+
+When stdin is not a terminal, `ccw` falls back to three numbered prompts read from stdin.
+
+## Usage column
+
+The `5h / 7d` column shows how much of each rate-limit window the account has used, and when the
+sooner one resets. Numbers come from `https://api.anthropic.com/api/oauth/usage`, called with the
+profile's OAuth token from `~/.ccw/<name>/.credentials.json`.
+
+- `CCW_NO_USAGE=1` turns the network off; cached numbers are still shown (`usage off` when there
+  are none).
+- A snapshot younger than 60 seconds is reused; `u` in the picker forces a re-fetch.
+- Expired or missing credentials show `usage n/a`. `ccw` does not refresh tokens — run
+  `ccw login <name>` and the column fills in again.
+- The endpoint rate-limits aggressive polling, and nothing here polls in the background or leaves
+  a daemon behind.
+
+## Model and effort
+
+`ccw` passes `--model <value>` and `--effort <level>` to `claude` only when you pick something
+other than `default`. Both are remembered per profile in `~/.ccw/.launch/<name>`.
+
+| Flag | Values | What it does |
+| --- | --- | --- |
+| `--model <alias|id>` | `opus`, `sonnet`, `haiku`, `fable`, `default`, or any full Anthropic model ID | model for this session |
+| `--effort <level>` | `low`, `medium`, `high`, `xhigh`, `max`, `default` | how much the model thinks per turn |
+| `-Q`, `--quiet` | — | drop the `launching claude as …` line |
+
+```bash
+ccw defaults work --model opus --effort xhigh   # set once, no launch
+ccw defaults work                               # what will launch
+ccw defaults                                    # every profile
+ccw add work --effort high                      # not parsed: --effort belongs to ccw, not add
+```
+
+`--model` and `--effort` are consumed by `ccw` wherever they appear, except after `--`. Use
+`ccw work -- --effort low` to hand a raw flag to `claude` instead. The flags write the remembered
+choice too, so the picker opens on them next time.
 
 ## YOLO mode
 
@@ -138,6 +233,8 @@ Every launch appends `--allow-dangerously-skip-permissions --dangerously-skip-pe
 ~/.claude          → profile "default" (your existing Claude Code setup)
 ~/.ccw/<name>/     → every other profile (CLAUDE_CONFIG_DIR)
 ~/.ccw/.labels/    → picker display names (one plain text file per profile)
+~/.ccw/.launch/    → remembered model/effort (one plain text file per profile)
+~/.ccw/.usage/     → last known 5h/7d usage (one JSON file per profile)
 ```
 
 Set `CCW_HOME` to keep profiles somewhere else. Each profile directory holds its own

@@ -17,6 +17,10 @@ pub struct Paths {
     /// Root for every non-default profile: `~/.ccw` (override with CCW_HOME).
     pub root: PathBuf,
     pub labels: PathBuf,
+    /// Remembered model/effort per profile.
+    pub prefs: PathBuf,
+    /// Last known rate-limit usage per profile.
+    pub usage: PathBuf,
     /// The normal Claude Code config dir, used by the "default" profile.
     pub default_dir: PathBuf,
 }
@@ -32,6 +36,8 @@ pub fn paths() -> &'static Paths {
         };
         Paths {
             labels: root.join(".labels"),
+            prefs: root.join(".launch"),
+            usage: root.join(".usage"),
             default_dir: home.join(".claude"),
             root,
             home,
@@ -169,6 +175,8 @@ pub fn unique_name(base: &str) -> String {
 
 // ----------------------------------------------------------------- details
 
+/// Everything the pickers show about one profile.
+#[derive(Clone)]
 pub struct Profile {
     pub name: String,
     pub dir: PathBuf,
@@ -305,38 +313,60 @@ pub fn human_age(t: Option<SystemTime>) -> String {
     format!("{}d ago", (h as f64 / 24.0).round() as u64)
 }
 
-/// One row of the picker.
-pub fn picker_line(p: &Profile) -> String {
+/// Column widths of one picker row, so every row lines up.
+pub const LABEL_COL: usize = 20;
+pub const ACCOUNT_COL: usize = 32;
+
+/// One row of the picker: the account on the left, its rate-limit usage on the right,
+/// then the profile directory and the remaining details in dim text.
+pub fn picker_line(p: &Profile, usage: &str) -> String {
     let c = c();
     let shown = p
         .label
         .clone()
         .or_else(|| p.email.as_deref().map(|e| account_name(e).to_string()))
         .unwrap_or_else(|| p.name.clone());
-    let label = pad(&shown, 20);
+    let label = pad(&shown, LABEL_COL);
+    let usage = pad(usage, crate::usage::CELL_WIDTH);
     let tail = format!("{}{}{}", c.dim, p.name, c.reset);
+
     if !p.exists {
-        return format!("{label} {}(new — press a){}", c.dim, c.reset);
+        return format!(
+            "{label} {}{}{} {usage}  {}(new — press a){}",
+            c.dim,
+            pad("", ACCOUNT_COL),
+            c.reset,
+            c.dim,
+            c.reset
+        );
     }
     if p.auth.as_deref() == Some("logged-out") {
-        return format!("{label} {}logged out{}  {tail}", c.yellow, c.reset);
+        return format!(
+            "{label} {}{}{} {usage}  {tail}",
+            c.yellow,
+            pad("logged out", ACCOUNT_COL),
+            c.reset
+        );
     }
-    let who = p.email.as_deref().or(p.auth.as_deref()).unwrap_or("?");
+
+    let who = pad(
+        p.email.as_deref().or(p.auth.as_deref()).unwrap_or("?"),
+        ACCOUNT_COL,
+    );
     let plan = p
         .plan
         .as_deref()
-        .map(|pl| format!(" {}({pl}){}", c.dim, c.reset))
+        .map(|pl| format!(" ({pl})"))
         .unwrap_or_default();
     let age = if p.last_used.is_some() {
-        format!(" {}{}{}", c.dim, human_age(p.last_used), c.reset)
+        format!("  {}", human_age(p.last_used))
     } else {
         String::new()
     };
-    let dir_hint = match &p.label {
-        Some(l) if *l != p.name => format!(" {tail}"),
-        _ => String::new(),
-    };
-    format!("{label} {}{who}{}{plan}{dir_hint}{age}", c.cyan, c.reset)
+    format!(
+        "{label} {}{who}{} {usage}  {tail}{}{plan}{age}{}",
+        c.cyan, c.reset, c.dim, c.reset
+    )
 }
 
 #[cfg(test)]

@@ -2,14 +2,17 @@
 
 mod actions;
 mod claude;
+mod launch;
 mod profile;
 mod style;
 mod tui;
+mod usage;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use actions::parse_login_opts;
+use launch::{parse_effort, parse_model, Choice};
 use profile::{describe, describe_all, human_age, profile_env, DEFAULT};
 use style::{c, pad, pad_end};
 
@@ -17,11 +20,12 @@ const USAGE: &str = "\
 ccw - Claude Code multi-account launcher
 
 Usage:
-  ccw                      TUI: pick an account, then launch claude
+  ccw                      TUI: pick an account, then a model and effort, then launch claude
   ccw <name> [args...]     launch claude with that profile (no TUI)
   ccw list                 profiles with account, plan, label and last use
   ccw account [name]       one profile in detail (alias: whoami)
   ccw label [name] [text]  set the picker display name (no text = clear, no name = list)
+  ccw defaults [name]      remembered model/effort (alias: model)
   ccw add                  log in first, then name the profile after the account
   ccw add <email>          sign in as that email (pre-filled), profile named after it
   ccw add <name> [--email <email>]
@@ -35,6 +39,18 @@ Usage:
   ccw trust [name] [dir]   mark a directory trusted for that profile
   ccw -- <args...>         TUI, then pass args to claude (e.g. ccw -- -p \"hi\")
   ccw --version            print the version
+
+Launch flags (anywhere on the command line):
+  --model <alias|id>       model for this session (opus, sonnet, haiku, fable, default, or an
+                           Anthropic model ID). Skips the model step.
+  --effort <level>         low, medium, high, xhigh, max or default. Skips the effort step.
+  -Q, --quiet              do not print the launch summary line
+
+The picker shows each account's 5h/7d rate-limit usage, read from Claude Code's
+/api/oauth/usage endpoint in the background. CCW_NO_USAGE=1 turns that off.
+
+Model and effort are remembered per profile in ~/.ccw/.launch/<name>; the flags above write
+that memory too, so the picker starts where you left off.
 
 Login flags: --email <addr>, --console (API billing), --sso
 
@@ -55,6 +71,104 @@ fn is_known(name: &str) -> bool {
     profile::list_names().iter().any(|n| n == name)
 }
 
+/// `ccw`-only flags, removed from argv before claude sees what is left.
+#[derive(Default)]
+struct LaunchFlags {
+    model: Option<String>,
+    model_given: bool,
+    effort: Option<String>,
+    effort_given: bool,
+    quiet: bool,
+}
+
+impl LaunchFlags {
+    /// Overlay the explicit flags on a remembered choice.
+    fn apply(&self, choice: &mut Choice) {
+        if self.model_given {
+            choice.model = self.model.clone();
+        }
+        if self.effort_given {
+            choice.effort = self.effort.clone();
+        }
+    }
+
+    fn any_given(&self) -> bool {
+        self.model_given || self.effort_given
+    }
+}
+
+/// Split --model/--effort/--quiet out of argv. Bad values are an error, not a panic.
+fn parse_launch_flags(argv: &[String]) -> Result<(LaunchFlags, Vec<String>), String> {
+    let mut flags = LaunchFlags::default();
+    let mut rest = Vec::with_capacity(argv.len());
+    let mut i = 0;
+    while i < argv.len() {
+        let arg = &argv[i];
+        if arg == "--" {
+            // everything after the separator belongs to claude
+            rest.extend(argv[i..].iter().cloned());
+            break;
+        }
+        let (name, inline) = match arg.split_once('=') {
+            Some((n, v)) if n.starts_with("--") => (n, Some(v.to_string())),
+            _ => (arg.as_str(), None),
+        };
+        let value = |i: &mut usize| -> Result<String, String> {
+            if let Some(v) = &inline {
+                return Ok(v.clone());
+            }
+            *i += 1;
+            argv.get(*i)
+                .cloned()
+                .ok_or_else(|| format!("{name} needs a value"))
+        };
+        match name {
+            "--model" => {
+                let raw = value(&mut i)?;
+                flags.model_given = true;
+                flags.model = parse_model(&raw);
+            }
+            "--effort" => {
+                let raw = value(&mut i)?;
+                flags.effort_given = true;
+                flags.effort = parse_effort(&raw)?;
+            }
+            "-Q" | "--quiet" => flags.quiet = true,
+            _ => rest.push(arg.clone()),
+        }
+        i += 1;
+    }
+    Ok((flags, rest))
+}
+
+/// claude arguments for a launch: model/effort first, then the YOLO flags and the
+/// caller's own arguments.
+fn claude_args(choice: &Choice, passthrough: &[String]) -> Vec<String> {
+    let mut args = choice.args();
+    args.extend(claude::with_yolo(passthrough));
+    args
+}
+
+fn launch(name: &str, flags: &LaunchFlags, passthrough: &[String]) -> i32 {
+    let mut choice = launch::read(name);
+    flags.apply(&mut choice);
+    if flags.any_given() {
+        if let Err(e) = launch::write(name, &choice) {
+            eprintln!("could not remember the choice: {e}");
+        }
+    }
+    if !flags.quiet {
+        let c = c();
+        println!(
+            "{}launching claude as {name} ({}){}",
+            c.dim,
+            choice.summary(),
+            c.reset
+        );
+    }
+    claude::exec(&claude_args(&choice, passthrough), &profile_env(name))
+}
+
 fn cmd_list() -> i32 {
     let c = c();
     let rows = describe_all(false);
@@ -63,9 +177,14 @@ fn cmd_list() -> i32 {
     if show_label {
         head.push(("label", 18));
     }
-    head.extend([("account", 34), ("plan", 8)]);
+    head.extend([("account", 34), ("plan", 8), ("5h / 7d", 26)]);
     let line: Vec<String> = head.iter().map(|(h, w)| pad(h, *w)).collect();
-    println!("{} last used path", line.join(" "));
+    println!("{} last used model effort path", line.join(" "));
+    let usage = if usage::disabled() {
+        "usage off".to_string()
+    } else {
+        String::new()
+    };
     for p in &rows {
         let mut cols = vec![p.name.clone()];
         if show_label {
@@ -78,15 +197,28 @@ fn cmd_list() -> i32 {
                 .unwrap_or_else(|| "-".into()),
         );
         cols.push(p.plan.clone().unwrap_or_default());
+        let cell = if usage.is_empty() {
+            let slot = usage::lookup(&p.name, true);
+            match slot.usage {
+                Some(u) => usage::cell(&u),
+                None => "-".into(),
+            }
+        } else {
+            usage.clone()
+        };
+        cols.push(cell);
         let line: Vec<String> = cols
             .iter()
             .zip(&head)
             .map(|(col, (_, w))| pad(col, *w))
             .collect();
+        let choice = launch::read(&p.name);
         println!(
-            "{} {} {}{}{}",
+            "{} {} {} {} {}{}{}",
             line.join(" "),
             pad_end(&human_age(p.last_used), 9),
+            pad_end(choice.model.as_deref().unwrap_or("default"), 8),
+            pad_end(choice.effort.as_deref().unwrap_or("default"), 7),
             c.dim,
             p.dir.display(),
             c.reset
@@ -131,6 +263,7 @@ fn cmd_label(args: &[String]) -> i32 {
 fn cmd_account(name: &str) -> i32 {
     let info = describe(name, false);
     let dash = |v: Option<&str>| v.unwrap_or("-").to_string();
+    let choice = launch::read(name);
     println!("profile   {}", info.name);
     println!("label     {}", info.label.as_deref().unwrap_or("(none)"));
     println!("email     {}", dash(info.email.as_deref()));
@@ -140,8 +273,37 @@ fn cmd_account(name: &str) -> i32 {
     );
     println!("plan      {}", dash(info.plan.as_deref()));
     println!("auth      {}", dash(info.auth.as_deref()));
+    println!("model     {}", dash(choice.model.as_deref()));
+    println!("effort    {}", dash(choice.effort.as_deref()));
     println!("dir       {}", info.dir.display());
     println!("last used {}", human_age(info.last_used));
+    0
+}
+
+fn cmd_launch_defaults(args: &[String], flags: &LaunchFlags) -> i32 {
+    let c = c();
+    let Some(name) = args.first() else {
+        for p in describe_all(true) {
+            println!("{:<16} {}", p.name, launch::read(&p.name).summary());
+        }
+        return 0;
+    };
+    if !is_known(name) {
+        eprintln!("unknown profile \"{name}\"");
+        return 1;
+    }
+    let mut choice = launch::read(name);
+    flags.apply(&mut choice);
+    if let Err(e) = launch::write(name, &choice) {
+        eprintln!("could not save: {e}");
+        return 1;
+    }
+    println!(
+        "{}{name} launches with {}{}",
+        c.green,
+        choice.summary(),
+        c.reset
+    );
     0
 }
 
@@ -155,15 +317,27 @@ fn run() -> i32 {
         claude::set_safe();
         argv.retain(|a| a != "--safe" && a != "--no-yolo");
     }
+    let (flags, argv) = match parse_launch_flags(&argv) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("{e}");
+            return 2;
+        }
+    };
+    dispatch(argv, flags)
+}
+
+/// Route the command line once ccw's own flags are out of the way.
+fn dispatch(argv: Vec<String>, flags: LaunchFlags) -> i32 {
     let first = argv.first().cloned().unwrap_or_default();
     let rest = argv.get(1..).unwrap_or_default();
-
     match first.as_str() {
         "list" | "ls" => return cmd_list(),
         "label" => return cmd_label(rest),
         "account" | "whoami" => {
             return cmd_account(rest.first().map(String::as_str).unwrap_or(DEFAULT))
         }
+        "defaults" | "model" => return cmd_launch_defaults(rest, &flags),
         "add" => {
             let (opts, pos) = parse_login_opts(rest);
             return match pos.first() {
@@ -226,7 +400,7 @@ fn run() -> i32 {
     // explicit profile: ccw <name> [claude args...]
     if !first.is_empty() && !first.starts_with('-') {
         if is_known(&first) {
-            return claude::exec(&claude::with_yolo(rest), &profile_env(&first));
+            return launch(&first, &flags, rest);
         }
         eprintln!(
             "unknown profile \"{first}\". known: {}",
@@ -237,17 +411,119 @@ fn run() -> i32 {
     }
 
     // TUI path
-    let Some(chosen) = tui::pick(describe_all(false)) else {
+    let Some(picked) = tui::pick(describe_all(false)) else {
         return 130;
     };
-    if !chosen.exists {
-        let code = actions::add(&chosen.name, &Default::default());
+    let tui::Picked { profile, choice } = picked;
+    if !profile.exists {
+        let code = actions::add(&profile.name, &Default::default());
         if code != 0 {
             return code;
         }
     }
     let passthrough = if first == "--" { rest } else { &argv[..] };
+    let mut choice = choice;
+    flags.apply(&mut choice);
+    if flags.any_given() {
+        if let Err(e) = launch::write(&profile.name, &choice) {
+            eprintln!("could not remember the choice: {e}");
+        }
+    }
     let c = c();
-    println!("{}launching claude as {}{}", c.dim, chosen.name, c.reset);
-    claude::exec(&claude::with_yolo(passthrough), &profile_env(&chosen.name))
+    if !flags.quiet {
+        println!(
+            "{}launching claude as {} ({}){}",
+            c.dim,
+            profile.name,
+            choice.summary(),
+            c.reset
+        );
+    }
+    claude::exec(
+        &claude_args(&choice, passthrough),
+        &profile_env(&profile.name),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn v(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn launch_flags_are_split_out() {
+        let (flags, rest) =
+            parse_launch_flags(&v(&["work", "--model", "opus", "-p", "hi"])).expect("parses");
+        assert_eq!(rest, v(&["work", "-p", "hi"]));
+        assert_eq!(flags.model.as_deref(), Some("opus"));
+        assert!(!flags.effort_given);
+        assert!(!flags.quiet);
+    }
+
+    #[test]
+    fn inline_and_equals_forms() {
+        let (flags, rest) =
+            parse_launch_flags(&v(&["--model=sonnet", "--effort=XHIGH", "work"])).expect("parses");
+        assert_eq!(rest, v(&["work"]));
+        assert_eq!(flags.model.as_deref(), Some("sonnet"));
+        assert_eq!(flags.effort.as_deref(), Some("xhigh"));
+    }
+
+    #[test]
+    fn model_default_clears_the_value() {
+        let (flags, _) = parse_launch_flags(&v(&["--model", "default"])).expect("parses");
+        assert!(flags.model_given);
+        assert_eq!(flags.model, None);
+    }
+
+    #[test]
+    fn bad_effort_is_an_error() {
+        assert!(parse_launch_flags(&v(&["--effort", "turbo"])).is_err());
+        assert!(parse_launch_flags(&v(&["--effort"])).is_err());
+    }
+
+    #[test]
+    fn separator_stops_flag_parsing() {
+        let (flags, rest) =
+            parse_launch_flags(&v(&["work", "--", "--model", "haiku"])).expect("parses");
+        assert_eq!(flags.model, None);
+        assert!(!flags.model_given);
+        assert_eq!(rest, v(&["work", "--", "--model", "haiku"]));
+    }
+
+    #[test]
+    fn quiet_flag() {
+        let (flags, rest) = parse_launch_flags(&v(&["-Q", "work"])).expect("parses");
+        assert!(flags.quiet);
+        assert_eq!(rest, v(&["work"]));
+    }
+
+    #[test]
+    fn flags_overlay_the_remembered_choice() {
+        let mut choice = Choice {
+            model: Some("sonnet".into()),
+            effort: Some("low".into()),
+        };
+        let (flags, _) = parse_launch_flags(&v(&["--model", "opus"])).expect("parses");
+        flags.apply(&mut choice);
+        assert_eq!(choice.model.as_deref(), Some("opus"));
+        assert_eq!(choice.effort.as_deref(), Some("low"));
+    }
+
+    #[test]
+    fn claude_args_put_model_first() {
+        let choice = Choice {
+            model: Some("opus".into()),
+            effort: Some("high".into()),
+        };
+        let args = claude_args(&choice, &v(&["-p", "hi"]));
+        assert_eq!(args[0], "--model");
+        assert_eq!(args[1], "opus");
+        assert_eq!(args[2], "--effort");
+        assert_eq!(args[3], "high");
+        assert!(args.contains(&"-p".to_string()));
+    }
 }
