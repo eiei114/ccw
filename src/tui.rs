@@ -10,7 +10,7 @@ use crate::claude;
 use crate::launch::{self, Choice, EFFORT_LEVELS};
 use crate::profile::{self, account_name, describe_all, Profile};
 use crate::style::{c, pad_end};
-use crate::usage::{self, Loader, Slot, State};
+use crate::usage::{self, Loader, Slot};
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -312,17 +312,7 @@ fn effort_cursor(choice: &Choice, rows: &[(String, String)]) -> usize {
 
 /// Text for the usage column of one row: the two windows, or why they are missing.
 pub fn usage_cell(slot: Option<&Slot>) -> String {
-    let Some(slot) = slot else {
-        return "checking…".into();
-    };
-    match (slot.usage, slot.state) {
-        (Some(usage), _) => usage::cell(&usage),
-        (None, State::Loading) => "checking…".into(),
-        (None, State::Off) => "usage off".into(),
-        (None, State::Error) => "usage n/a".into(),
-        (None, State::Cached) => "-".into(),
-        (None, State::Live) => "-".into(),
-    }
+    usage::cell_for(slot)
 }
 
 fn usage_snapshot(loader: &Loader) -> HashMap<String, Slot> {

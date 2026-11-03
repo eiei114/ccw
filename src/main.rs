@@ -199,10 +199,7 @@ fn cmd_list() -> i32 {
         cols.push(p.plan.clone().unwrap_or_default());
         let cell = if usage.is_empty() {
             let slot = usage::lookup(&p.name, true);
-            match slot.usage {
-                Some(u) => usage::cell(&u),
-                None => "-".into(),
-            }
+            usage::cell_for(Some(&slot))
         } else {
             usage.clone()
         };

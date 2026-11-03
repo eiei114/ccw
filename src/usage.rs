@@ -137,6 +137,23 @@ pub fn cell(usage: &Usage) -> String {
     )
 }
 
+/// Text for a usage column: the numbers, or why they are missing. `None` means the fetch
+/// has not reported back yet.
+pub fn cell_for(slot: Option<&Slot>) -> String {
+    let Some(slot) = slot else {
+        return "checking…".into();
+    };
+    if let Some(usage) = slot.usage {
+        return cell(&usage);
+    }
+    match slot.state {
+        State::Loading => "checking…".into(),
+        State::Off => "usage off".into(),
+        State::Error => "usage n/a".into(),
+        State::Cached | State::Live => cell(&Usage::default()),
+    }
+}
+
 // ------------------------------------------------------------------ parsing
 
 /// Days since 1970-01-01 for a civil date (Howard Hinnant's algorithm).
