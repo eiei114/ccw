@@ -46,6 +46,23 @@ pub fn init_terminal() {
     }
 }
 
+/// Terminal width in columns. `COLUMNS` wins when set, so piped output can be shaped too;
+/// otherwise ask the terminal, and fall back to 80.
+pub fn width() -> usize {
+    if let Some(cols) = std::env::var("COLUMNS")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|w| *w >= 20)
+    {
+        return cols;
+    }
+    crossterm::terminal::size()
+        .map(|(w, _)| w as usize)
+        .ok()
+        .filter(|w| *w >= 20)
+        .unwrap_or(80)
+}
+
 /// Truncate to `width` characters and pad with spaces.
 pub fn pad(s: &str, width: usize) -> String {
     let mut out: String = s.chars().take(width).collect();

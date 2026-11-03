@@ -1,6 +1,6 @@
 [package]
 name = "ccw"
-version = "0.4.1"
+version = "0.5.0"
 edition = "2021"
 rust-version = "1.80"
 description = "Claude Code multi-account launcher with a TUI picker"

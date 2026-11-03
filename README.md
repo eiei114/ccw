@@ -16,9 +16,9 @@ plugins and MCP servers. `ccw` manages one directory per account and gives you a
 ```
   ccw — choose a Claude Code account  (5h / 7d window)
 
-   ❯ 1  you          you@example.com      max     5h   8% · 7d  69%  ↻14m   default  8m ago
-     2  work         work@company.com     max     5h 100% · 7d 100%  ↻6h4m  work     1h ago
-     3  personal     logged out                  usage n/a                 personal
+   ❯ 1  you        you@example.com     5h   8% · 7d  69%  ↻14m  max  just now  default
+     2  work       work@company.com    5h 100% · 7d 100%  ↻6h4m  max  1h ago    work
+     3  personal   logged out          usage n/a                        personal
 
   ↑↓/jk move · enter next · l login · a add · e label · r refresh · u usage · q quit   YOLO
 ```
@@ -27,6 +27,11 @@ The `5h / 7d` column is the account's rate-limit usage: the rolling 5-hour windo
 weekly window, each as a percentage of the plan allowance, and `↻` for the sooner of the two
 reset times. It comes from Claude Code's own `GET /api/oauth/usage`, fetched in the background
 so the picker never waits on the network.
+
+Rows are laid out for the terminal they are drawn in and never wrap: a narrow window drops the
+plan, then the age, then the email (whole, never as a fragment), then shortens the label, and
+lastly the `↻` reset time. `COLUMNS` overrides the detected width, which also shapes piped
+output.
 
 `enter` moves on to the model, then the effort level, then launches:
 

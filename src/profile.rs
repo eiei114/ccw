@@ -313,66 +313,278 @@ pub fn human_age(t: Option<SystemTime>) -> String {
     format!("{}d ago", (h as f64 / 24.0).round() as u64)
 }
 
-/// Column widths of one picker row, so every row lines up.
-pub const LABEL_COL: usize = 20;
-pub const ACCOUNT_COL: usize = 32;
+/// Minimum width the email column needs before it is worth showing at all.
+const MIN_EMAIL: usize = 16;
 
-/// One row of the picker: the account on the left, its rate-limit usage on the right,
-/// then the profile directory and the remaining details in dim text.
-pub fn picker_line(p: &Profile, usage: &str) -> String {
+/// Column widths for one draw, chosen to fit the terminal.
+#[derive(Clone, Copy)]
+pub struct Columns {
+    pub label: usize,
+    pub email: usize,
+    pub plan: usize,
+    pub age: usize,
+    /// Drop the reset time from the usage cell when the terminal is narrow.
+    pub compact_usage: bool,
+}
+
+impl Default for Columns {
+    fn default() -> Self {
+        Columns {
+            label: 16,
+            email: 26,
+            plan: 5,
+            age: 8,
+            compact_usage: false,
+        }
+    }
+}
+
+impl Columns {
+    pub fn cell_width(&self) -> usize {
+        crate::usage::cell_width(self.compact_usage)
+    }
+
+    /// Give up one column at a time, cheapest first: trim the label (the profile name is
+    /// still on the right), drop the plan, drop the age, drop the email, shorten the label
+    /// further, then shorten the usage cell. The email is all-or-nothing: a truncated
+    /// address is not worth the column, so callers drop it before calling this.
+    pub fn tighten(&mut self) -> bool {
+        if self.label > 12 {
+            self.label -= 2;
+            true
+        } else if self.plan > 0 {
+            self.plan = 0;
+            true
+        } else if self.age > 0 {
+            self.age = 0;
+            true
+        } else if self.email > 0 {
+            self.email = 0;
+            true
+        } else if self.label > 6 {
+            self.label -= 2;
+            true
+        } else if !self.compact_usage {
+            self.compact_usage = true;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// Strip ANSI escapes so a rendered row can be measured.
+fn visible_len(s: &str) -> usize {
+    let mut count = 0;
+    let mut in_escape = false;
+    for ch in s.chars() {
+        if in_escape {
+            if ch.is_ascii_alphabetic() {
+                in_escape = false;
+            }
+            continue;
+        }
+        if ch == '\x1b' {
+            in_escape = true;
+            continue;
+        }
+        count += 1;
+    }
+    count
+}
+
+/// One account's usage, rendered both ways so a narrow terminal can pick.
+#[derive(Clone)]
+pub struct UsageText {
+    pub full: String,
+    pub compact: String,
+}
+
+impl UsageText {
+    pub fn from_slot(slot: Option<&crate::usage::Slot>) -> UsageText {
+        use crate::usage::{cell, cell_compact, cell_for, Slot};
+        let slot: Option<Slot> = slot.copied();
+        let numbers = slot.and_then(|s| s.usage);
+        match numbers {
+            Some(usage) => UsageText {
+                full: cell(&usage),
+                compact: cell_compact(&usage),
+            },
+            None => {
+                let reason = cell_for(slot.as_ref());
+                UsageText {
+                    full: reason.clone(),
+                    compact: reason,
+                }
+            }
+        }
+    }
+}
+
+/// Render every picker row so that none is wider than `width` columns. Columns are given
+/// up from the least important side until the widest row fits, so the terminal never wraps
+/// a row onto the next line. The email column is sized to the longest address and dropped
+/// entirely rather than shown as a fragment.
+pub fn picker_rows(rows: &[(&Profile, UsageText)], width: usize) -> Vec<String> {
+    // The email column needs to hold the longest address in the list, not an average.
+    let widest_email = rows
+        .iter()
+        .filter_map(|(p, _)| p.email.as_deref().or(p.auth.as_deref()))
+        .map(|e| e.chars().count())
+        .max();
+    let mut columns = Columns::default();
+    if let Some(needed) = widest_email {
+        if needed >= MIN_EMAIL {
+            columns.email = needed;
+        }
+    }
+    loop {
+        let lines: Vec<String> = rows
+            .iter()
+            .map(|(p, usage)| picker_line(p, &usage.full, &usage.compact, &columns))
+            .collect();
+        let widest = lines.iter().map(|l| visible_len(l)).max().unwrap_or(0);
+        // 3 columns for the lead gutter and the cursor
+        if widest + 3 <= width || !columns.tighten() {
+            return lines;
+        }
+    }
+}
+/// One row of the picker: identity on the left, rate-limit usage on the right, then the
+/// plan and the last-used age. `usage` is the full cell and `usage_compact` the variant
+/// without the reset time. Callers use [`picker_rows`] so the row fits the terminal.
+pub fn picker_line(p: &Profile, usage: &str, usage_compact: &str, columns: &Columns) -> String {
     let c = c();
     let shown = p
         .label
         .clone()
         .or_else(|| p.email.as_deref().map(|e| account_name(e).to_string()))
         .unwrap_or_else(|| p.name.clone());
-    let label = pad(&shown, LABEL_COL);
-    let usage = pad(usage, crate::usage::CELL_WIDTH);
-    let tail = format!("{}{}{}", c.dim, p.name, c.reset);
-
-    if !p.exists {
-        return format!(
-            "{label} {}{}{} {usage}  {}(new — press a){}",
-            c.dim,
-            pad("", ACCOUNT_COL),
-            c.reset,
-            c.dim,
+    let mut out = format!("{} ", pad(&shown, columns.label));
+    if columns.email > 0 {
+        let email = p.email.as_deref().or(p.auth.as_deref()).unwrap_or("");
+        out.push_str(&format!(
+            "{}{}{} ",
+            c.cyan,
+            pad(email, columns.email),
             c.reset
-        );
+        ));
     }
-    if p.auth.as_deref() == Some("logged-out") {
-        return format!(
-            "{label} {}{}{} {usage}  {tail}",
-            c.yellow,
-            pad("logged out", ACCOUNT_COL),
-            c.reset
-        );
-    }
-
-    let who = pad(
-        p.email.as_deref().or(p.auth.as_deref()).unwrap_or("?"),
-        ACCOUNT_COL,
-    );
-    let plan = p
-        .plan
-        .as_deref()
-        .map(|pl| format!(" ({pl})"))
-        .unwrap_or_default();
-    let age = if p.last_used.is_some() {
-        format!("  {}", human_age(p.last_used))
+    let text = if columns.compact_usage {
+        usage_compact
     } else {
-        String::new()
+        usage
     };
-    format!(
-        "{label} {}{who}{} {usage}  {tail}{}{plan}{age}{}",
-        c.cyan, c.reset, c.dim, c.reset
-    )
+    let cell = if p.auth.as_deref() == Some("logged-out") && p.email.is_none() {
+        format!(
+            "{}{}{}",
+            c.yellow,
+            pad("logged out", columns.cell_width()),
+            c.reset
+        )
+    } else {
+        pad(text, columns.cell_width())
+    };
+    out.push_str(&cell);
+    out.push(' ');
+    if columns.plan > 0 {
+        out.push_str(&format!(
+            "{}{}{}",
+            c.dim,
+            pad(p.plan.as_deref().unwrap_or(""), columns.plan),
+            c.reset
+        ));
+    }
+    if columns.age > 0 {
+        out.push_str(&format!(
+            "{}{}{} ",
+            c.dim,
+            pad(&human_age(p.last_used), columns.age),
+            c.reset
+        ));
+    }
+    out.push_str(&format!("{}{}{}", c.dim, p.name, c.reset));
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn rows_fit_the_terminal() {
+        let mut profile = Profile {
+            name: "account-2".into(),
+            dir: PathBuf::from("/tmp/account-2"),
+            exists: true,
+            email: Some("account@dotfield.xyz".into()),
+            plan: Some("max".into()),
+            auth: Some("claude.ai".into()),
+            label: Some("account".into()),
+            last_used: Some(SystemTime::now()),
+        };
+        let text = UsageText {
+            full: "5h  16% · 7d  69%  ↻4h58m".to_string(),
+            compact: "5h  16% · 7d  69%".to_string(),
+        };
+        for width in [40, 60, 80, 100, 132] {
+            let rows = picker_rows(&[(&profile, text.clone())], width);
+            let widest = rows.iter().map(|r| visible_len(r)).max().unwrap_or(0);
+            assert!(widest + 3 <= width, "width {width} gave {widest}");
+        }
+        // narrow terminals keep the usage cell and drop the email
+        let narrow = picker_rows(&[(&profile, text.clone())], 44);
+        assert!(visible_len(&narrow[0]) + 3 <= 44);
+        assert!(!narrow[0].contains("dotfield"));
+
+        // the label and the name always survive, however tight it gets
+        profile.label = Some("a-very-long-display-name".into());
+        let tight = picker_rows(&[(&profile, text)], 40);
+        assert!(tight[0].contains("account-2"));
+    }
+
+    #[test]
+    fn email_shows_whole_or_not_at_all() {
+        let mut profile = Profile {
+            name: "account-2".into(),
+            dir: PathBuf::from("/tmp/account-2"),
+            exists: true,
+            email: Some("account@dotfield.xyz".into()),
+            plan: Some("max".into()),
+            auth: Some("claude.ai".into()),
+            label: Some("account".into()),
+            last_used: Some(SystemTime::now()),
+        };
+        let text = UsageText {
+            full: "5h  16% · 7d  69%  ↻4h58m".to_string(),
+            compact: "5h  16% · 7d  69%".to_string(),
+        };
+        for width in [72, 80, 100] {
+            let line = &picker_rows(&[(&profile, text.clone())], width)[0];
+            assert!(
+                line.contains("account@dotfield.xyz"),
+                "width {width}: {line}"
+            );
+        }
+        // narrow: the column disappears whole, never as a fragment
+        for width in [40, 50, 60] {
+            let line = &picker_rows(&[(&profile, text.clone())], width)[0];
+            assert!(!line.contains("dotfield"), "width {width}: {line}");
+            assert!(!line.contains("account@"), "width {width}: {line}");
+        }
+
+        profile.email = Some("x@y.z".into());
+        let line = &picker_rows(&[(&profile, text)], 100)[0];
+        assert!(line.contains("x@y.z"));
+    }
+
+    #[test]
+    fn visible_length_ignores_colour() {
+        assert_eq!(visible_len("abc"), 3);
+        assert_eq!(visible_len("\x1b[36mabc\x1b[0m"), 3);
+        assert_eq!(visible_len("\x1b[1m\x1b[36mab\x1b[0m"), 2);
+    }
 
     #[test]
     fn email_detection() {

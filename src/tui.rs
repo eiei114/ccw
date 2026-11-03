@@ -9,8 +9,8 @@ use crate::actions::{self, LoginOpts};
 use crate::claude;
 use crate::launch::{self, Choice, EFFORT_LEVELS};
 use crate::profile::{self, account_name, describe_all, Profile};
-use crate::style::{c, pad_end};
-use crate::usage::{self, Loader, Slot};
+use crate::style::{self, c, pad_end};
+use crate::usage::{Loader, Slot};
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -161,10 +161,11 @@ fn pick_plain(profiles: Vec<Profile>, loader: &mut Loader) -> Option<Picked> {
 }
 
 fn row_titles(profiles: &[Profile], slots: &HashMap<String, Slot>) -> Vec<String> {
-    profiles
+    let rows: Vec<(&Profile, profile::UsageText)> = profiles
         .iter()
-        .map(|p| profile::picker_line(p, &usage_cell(slots.get(&p.name))))
-        .collect()
+        .map(|p| (p, profile::UsageText::from_slot(slots.get(&p.name))))
+        .collect();
+    profile::picker_rows(&rows, style::width())
 }
 
 // ---------------------------------------------------------------- list paging
@@ -310,11 +311,6 @@ fn effort_cursor(choice: &Choice, rows: &[(String, String)]) -> usize {
 
 // ---------------------------------------------------------------- usage column
 
-/// Text for the usage column of one row: the two windows, or why they are missing.
-pub fn usage_cell(slot: Option<&Slot>) -> String {
-    usage::cell_for(slot)
-}
-
 fn usage_snapshot(loader: &Loader) -> HashMap<String, Slot> {
     loader.snapshot()
 }
@@ -345,19 +341,13 @@ fn pick_account(profiles: &mut Vec<Profile>, loader: &mut Loader) -> Option<usiz
             c.bold, c.reset, c.dim, c.reset, c.dim, c.reset
         ));
         out.push(String::new());
-        for (i, p) in profiles.iter().enumerate() {
+        for (i, line) in row_titles(profiles, &slots).iter().enumerate() {
             let sel = if i == cursor {
                 format!("{}❯{}", c.green, c.reset)
             } else {
                 " ".to_string()
             };
-            out.push(format!(
-                " {sel} {}{}{}  {}",
-                c.dim,
-                i + 1,
-                c.reset,
-                profile::picker_line(p, &usage_cell(slots.get(&p.name)))
-            ));
+            out.push(format!(" {sel} {}{}{}  {line}", c.dim, i + 1, c.reset));
         }
         out.push(String::new());
         let mode = if claude::is_safe() {

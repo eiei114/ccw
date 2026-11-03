@@ -173,53 +173,101 @@ fn cmd_list() -> i32 {
     let c = c();
     let rows = describe_all(false);
     let show_label = rows.iter().any(|p| p.label.is_some());
-    let mut head = vec![("profile", 16)];
-    if show_label {
-        head.push(("label", 18));
-    }
-    head.extend([("account", 34), ("plan", 8), ("5h / 7d", 26)]);
-    let line: Vec<String> = head.iter().map(|(h, w)| pad(h, *w)).collect();
-    println!("{} last used model effort path", line.join(" "));
-    let usage = if usage::disabled() {
-        "usage off".to_string()
-    } else {
-        String::new()
-    };
-    for p in &rows {
-        let mut cols = vec![p.name.clone()];
-        if show_label {
-            cols.push(p.label.clone().unwrap_or_default());
-        }
-        cols.push(
-            p.email
-                .clone()
-                .or_else(|| p.auth.clone())
-                .unwrap_or_else(|| "-".into()),
-        );
-        cols.push(p.plan.clone().unwrap_or_default());
-        let cell = if usage.is_empty() {
-            let slot = usage::lookup(&p.name, true);
-            usage::cell_for(Some(&slot))
-        } else {
-            usage.clone()
-        };
-        cols.push(cell);
-        let line: Vec<String> = cols
+    let usage_off = usage::disabled();
+    // Measure first so the header and every row share one set of widths.
+    let usage_cells: Vec<String> = rows
+        .iter()
+        .map(|p| {
+            if usage_off {
+                "usage off".to_string()
+            } else {
+                let slot = usage::lookup(&p.name, true);
+                usage::cell_for(Some(&slot))
+            }
+        })
+        .collect();
+    let ages: Vec<String> = rows.iter().map(|p| human_age(p.last_used)).collect();
+    let models: Vec<String> = rows
+        .iter()
+        .map(|p| launch::read(&p.name).model.unwrap_or_else(|| "-".into()))
+        .collect();
+    let efforts: Vec<String> = rows
+        .iter()
+        .map(|p| launch::read(&p.name).effort.unwrap_or_else(|| "-".into()))
+        .collect();
+
+    let width_of = |items: &[String], cap: usize| {
+        items
             .iter()
-            .zip(&head)
-            .map(|(col, (_, w))| pad(col, *w))
-            .collect();
-        let choice = launch::read(&p.name);
-        println!(
-            "{} {} {} {} {}{}{}",
-            line.join(" "),
-            pad_end(&human_age(p.last_used), 9),
-            pad_end(choice.model.as_deref().unwrap_or("default"), 8),
-            pad_end(choice.effort.as_deref().unwrap_or("default"), 7),
-            c.dim,
-            p.dir.display(),
-            c.reset
-        );
+            .map(|s| s.chars().count())
+            .chain([cap])
+            .max()
+            .unwrap_or(cap)
+            .max(4)
+    };
+    let w_profile = width_of(&rows.iter().map(|p| p.name.clone()).collect::<Vec<_>>(), 16);
+    let w_label = if show_label {
+        width_of(
+            &rows
+                .iter()
+                .map(|p| p.label.clone().unwrap_or_default())
+                .collect::<Vec<_>>(),
+            20,
+        )
+    } else {
+        0
+    };
+    let w_account = width_of(
+        &rows
+            .iter()
+            .map(|p| {
+                p.email
+                    .clone()
+                    .or_else(|| p.auth.clone())
+                    .unwrap_or_else(|| "-".into())
+            })
+            .collect::<Vec<_>>(),
+        32,
+    );
+    let w_plan = width_of(
+        &rows
+            .iter()
+            .map(|p| p.plan.clone().unwrap_or_default())
+            .collect::<Vec<_>>(),
+        8,
+    );
+    let w_usage = width_of(&usage_cells, usage::CELL_WIDTH).max(usage::CELL_WIDTH);
+    let w_age = width_of(&ages, 9);
+    let w_model = width_of(&models, 10);
+    let w_effort = width_of(&efforts, 8);
+
+    let mut head = vec![pad("profile", w_profile)];
+    if show_label {
+        head.push(pad("label", w_label));
+    }
+    head.push(pad("account", w_account));
+    head.push(pad("plan", w_plan));
+    head.push(pad("5h / 7d", w_usage));
+    head.push(pad("last used", w_age));
+    head.push(pad("model", w_model));
+    head.push(pad("effort", w_effort));
+    println!("{}{}{} path", c.dim, head.join(" "), c.reset);
+
+    for (i, p) in rows.iter().enumerate() {
+        let mut cols = vec![pad(&p.name, w_profile)];
+        if show_label {
+            cols.push(pad(p.label.as_deref().unwrap_or(""), w_label));
+        }
+        cols.push(pad(
+            p.email.as_deref().or(p.auth.as_deref()).unwrap_or("-"),
+            w_account,
+        ));
+        cols.push(pad(p.plan.as_deref().unwrap_or(""), w_plan));
+        cols.push(pad(&usage_cells[i], w_usage));
+        cols.push(pad(&ages[i], w_age));
+        cols.push(pad(&models[i], w_model));
+        cols.push(pad(&efforts[i], w_effort));
+        println!("{}{}{}{}", cols.join(" "), c.dim, p.dir.display(), c.reset);
     }
     0
 }

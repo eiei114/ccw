@@ -114,8 +114,28 @@ pub fn human_in(reset: i64) -> String {
     format!("{}d", hours / 24)
 }
 
-/// Width of [`cell`], so the picker column is stable.
+/// Width of the full [`cell`].
 pub const CELL_WIDTH: usize = 25;
+/// Width of [`cell_compact`], which drops the reset time.
+pub const CELL_SHORT_WIDTH: usize = 17;
+
+/// `5h  16% · 7d  69%` without the reset time, for narrow terminals.
+pub fn cell_compact(usage: &Usage) -> String {
+    let pct = |value: Option<f64>| match value {
+        Some(p) => format!("{:>3}%", percent(p)),
+        None => "  -".to_string(),
+    };
+    format!("5h {} · 7d {}", pct(usage.five_hour), pct(usage.seven_day))
+}
+
+/// Width of [`cell`] depends on which variant is in use.
+pub fn cell_width(compact: bool) -> usize {
+    if compact {
+        CELL_SHORT_WIDTH
+    } else {
+        CELL_WIDTH
+    }
+}
 
 /// `5h   8% · 7d  69%  ↻19m` — both windows, and the sooner reset.
 pub fn cell(usage: &Usage) -> String {
